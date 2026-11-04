@@ -17,6 +17,13 @@ class User(Base):
     password_hash = Column(String(255), nullable=False)
     role = Column(String(20), nullable=False)          # head | hr | employee
     display_name = Column(String(100), nullable=False)
+    
+    # New Profile Fields
+    email = Column(String(100), unique=True, nullable=True)
+    branch = Column(String(100), nullable=True)
+    designation = Column(String(100), nullable=True)
+    avatar = Column(Text, nullable=True)
+    
     created_at = Column(DateTime, default=utcnow)
 
 
@@ -33,22 +40,17 @@ class Expense(Base):
     employee_name = Column(String(100), nullable=False)
     type = Column(String(50), nullable=False, index=True)
     data = Column(JSON, nullable=False, default=dict)
-    # Same as `data` without attachment bytes. Lists, stats and CSV read only
-    # this column, so they never pull receipt photos out of the database.
-    # Kept in sync automatically (see the before_insert / before_update hooks below); NULL only for rows
-    # written before migration 0003, which the API handles too.
     data_lite = Column(JSON, nullable=True)
     status = Column(String(20), nullable=False, default="Pending", index=True)
-    # Pending | Approved | Rejected | In Progress (two-stage trips before they're ended)
 
     created_date = Column(DateTime, default=utcnow)
     submitted_date = Column(DateTime, nullable=True)
 
     # Decision tracking fields
     decided_by = Column(String(100), nullable=True)
-    decided_by_role = Column(String(20), nullable=True)  # head | hr - who made the decision
+    decided_by_role = Column(String(20), nullable=True)  
     decided_date = Column(DateTime, nullable=True)
-    rejection_reason = Column(Text, nullable=True)       # Used for both approval notes and rejection reasons
+    rejection_reason = Column(Text, nullable=True)       
 
     history = relationship(
         "ExpenseHistory", back_populates="expense",
@@ -72,15 +74,12 @@ class ExpenseHistory(Base):
 
 
 class FileAsset(Base):
-    """
-    Metadata for an uploaded receipt/photo. The actual bytes live on disk under
-    STORAGE_DIR; this row is what the frontend's IndexedDB file record becomes.
-    """
+    """Metadata for an uploaded receipt/photo."""
     __tablename__ = "files"
 
-    id = Column(String(64), primary_key=True)          # e.g. "f_3a9c1b..."
+    id = Column(String(64), primary_key=True)
     expense_id = Column(Integer, ForeignKey("expenses.id", ondelete="CASCADE"), nullable=True, index=True)
-    field_key = Column(String(50), nullable=True)       # which form field, e.g. "receipt"
+    field_key = Column(String(50), nullable=True)
     filename = Column(String(255), nullable=False)
     content_type = Column(String(100), nullable=False)
     size = Column(Integer, nullable=False)
@@ -102,10 +101,6 @@ def _data_lite_on_update(mapper, connection, target):
         target.data_lite = strip_file_payloads(target.data)
 
 
-# ── Extra indexes ──
-# The list endpoint always orders by created_date, and an employee's list is
-# "WHERE employee_id = ? ORDER BY created_date DESC". Created by migration 0002;
-# declared here too so `alembic revision --autogenerate` sees no difference.
 EXTRA_INDEXES = [
     Index("ix_expenses_created_date", Expense.created_date),
     Index("ix_expenses_employee_created", Expense.employee_id, Expense.created_date),

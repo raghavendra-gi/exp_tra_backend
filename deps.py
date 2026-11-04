@@ -14,14 +14,8 @@ import models
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
-# Messages go to the uvicorn terminal so you can see WHY a request got a 401.
 log = logging.getLogger("uvicorn.error")
 
-
-# The signed-in user is looked up on every request. That lookup is cached in
-# memory for a short time so most requests skip a database round trip
-# (/auth/me needs none at all). A role or name change shows up within
-# USER_CACHE_SECONDS; a deleted user is rejected again within the same time.
 USER_CACHE_SECONDS = 60
 
 
@@ -32,6 +26,11 @@ class CurrentUser:
     username: str
     role: str
     display_name: str
+    # 👇 ADDED THESE 4 FIELDS 👇
+    email: str | None
+    branch: str | None
+    designation: str | None
+    avatar: str | None
 
 
 _user_cache: dict = {}
@@ -65,11 +64,8 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     try:
         payload = decode_access_token(token)
     except ExpiredSignatureError:
-        # The most common case: the page was left open longer than
-        # ACCESS_TOKEN_EXPIRE_MINUTES. Safe and useful to tell the client.
         raise _unauthorized("Session expired. Please sign in again.", "token expired")
     except JWTError as exc:
-        # bad signature (different SECRET_KEY), malformed token, "undefined", ...
         raise _unauthorized("Could not validate credentials", f"invalid token ({exc})")
 
     username = payload.get("sub")
@@ -81,16 +77,29 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     if hit and hit[0] > now:
         return hit[1]
 
-    row = db.query(models.User.id, models.User.username, models.User.role, models.User.display_name) \
-        .filter(models.User.username == username).first()
+    # 👇 FIXED INDENTATION HERE 👇
+    row = db.query(
+        models.User.id, models.User.username, models.User.role, models.User.display_name,
+        models.User.email, models.User.branch, models.User.designation, models.User.avatar
+    ).filter(models.User.username == username).first()
+    
     if row is None:
-        # Token is genuine but this database has no such user
-        # (DATABASE_URL was switched, DB recreated, user deleted ...)
         raise _unauthorized(
             "Could not validate credentials",
             f"user '{username}' from the token does not exist in the connected database",
         )
-    user = CurrentUser(row.id, row.username, row.role, row.display_name)
+        
+    user = CurrentUser(
+        id=row.id, 
+        username=row.username, 
+        role=row.role, 
+        display_name=row.display_name,
+        email=row.email,
+        branch=row.branch,
+        designation=row.designation,
+        avatar=row.avatar
+    )
+    
     with _user_cache_lock:
         if len(_user_cache) > 5000:
             _user_cache.clear()

@@ -21,6 +21,11 @@ class UserOut(BaseModel):
     username: str
     display_name: str
     role: str
+    # 👇 ADDED THE NEW PROFILE FIELDS HERE 👇
+    email: Optional[str] = None
+    branch: Optional[str] = None
+    designation: Optional[str] = None
+    avatar: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -30,6 +35,15 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user: UserOut
+
+
+# 👇 ADDED THE NEW SCHEMA FOR UPDATING PROFILE 👇
+class ProfileUpdate(BaseModel):
+    username: Optional[str] = None
+    email: Optional[str] = None
+    branch: Optional[str] = None
+    designation: Optional[str] = None
+    avatar: Optional[str] = None
 
 
 # ───────── History ─────────
