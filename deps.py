@@ -108,7 +108,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 
 
 def require_approver(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
-    """head or hr only - matches canApprove() in the frontend."""
-    if user.role not in ("head", "hr"):
+    """head, hr, or op_head only - matches canApprove() in the frontend."""
+    if user.role not in ("head", "hr", "op_head"):
         raise HTTPException(status_code=403, detail="Approver role required")
     return user

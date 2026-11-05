@@ -8,6 +8,7 @@ from security import hash_password
 SEED_USERS = [
     {"username": "head", "password": "head@123", "role": "head", "display_name": "Head"},
     {"username": "hr", "password": "hr@123", "role": "hr", "display_name": "H.R"},
+    {"username": "ophead", "password": "ophead@123", "role": "op_head", "display_name": "Op Head"},
     {"username": "emp1", "password": "emp1@123", "role": "employee", "display_name": "Emp1"},
     {"username": "emp2", "password": "emp2@123", "role": "employee", "display_name": "Emp2"},
     {"username": "emp3", "password": "emp3@123", "role": "employee", "display_name": "Emp3"},

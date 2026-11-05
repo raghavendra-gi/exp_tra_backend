@@ -20,7 +20,7 @@ from timeutil import utcnow, to_ist
 router = APIRouter()
 
 TWO_STAGE_TYPES = {"Regional Trip"}
-APPROVER_ROLES = ("head", "hr")
+APPROVER_ROLES = ("head", "hr", "op_head")
 
 # Columns the list endpoint may be sorted by. Anything else falls back to created_date.
 SORTABLE = {

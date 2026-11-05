@@ -133,3 +133,12 @@ class StatsOut(BaseModel):
     rejected_amount: float
     in_progress: int
     in_progress_amount: float
+
+class UserCreate(BaseModel):
+    username: str
+    password: str
+    display_name: str
+    role: str = "employee"
+    email: Optional[str] = None
+    branch: Optional[str] = None
+    designation: Optional[str] = None
