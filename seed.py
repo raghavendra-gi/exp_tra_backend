@@ -6,8 +6,8 @@ from security import hash_password
 # Same five accounts the frontend currently hardcodes in its USERS array.
 # Change/rotate these passwords for anything beyond local development.
 SEED_USERS = [
-    {"username": "head", "password": "head@123", "role": "head", "display_name": "Head"},
-    {"username": "hr", "password": "hr@123", "role": "hr", "display_name": "H.R"},
+    {"username": "clerk", "password": "clerk@123", "role": "clerk", "display_name": "clerk"},
+    {"username": "accounts", "password": "accounts@123", "role": "accounts", "display_name": "Accounts"},
     {"username": "ophead", "password": "ophead@123", "role": "op_head", "display_name": "Op Head"},
     {"username": "emp1", "password": "emp1@123", "role": "employee", "display_name": "Emp1"},
     {"username": "emp2", "password": "emp2@123", "role": "employee", "display_name": "Emp2"},

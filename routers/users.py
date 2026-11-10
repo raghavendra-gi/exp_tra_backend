@@ -14,26 +14,27 @@ def create_employee(
     db: Session = Depends(get_db),
     current_user: CurrentUser = Depends(get_current_user)
 ):
-    # Only HR can create employees or heads
-    if current_user.role != "hr":
-        raise HTTPException(status_code=403, detail="Only HR can create new employees or heads")
+        # Only Accounts team can create employees or heads
+    if current_user.role != "accounts":
+        raise HTTPException(status_code=403, detail="Only Accounts team can create new employees or clerks")
 
-    # Check if username or email already exists
-    existing_user = db.query(models.User).filter(
-        (models.User.username == data.username) | (models.User.email == data.email)
-    ).first()
-    if existing_user:
-        raise HTTPException(status_code=400, detail="Username or email already registered")
+        username = data.username.strip()
+    email = (data.email or "").strip() or None   # blank email -> None
+
+    if db.query(models.User).filter(models.User.username == username).first():
+        raise HTTPException(status_code=400, detail="Username already registered")
+    if email and db.query(models.User).filter(models.User.email == email).first():
+        raise HTTPException(status_code=400, detail="Email already registered")
 
     # Create the new user
     new_user = models.User(
-        username=data.username,
+        username=username,
         password_hash=hash_password(data.password),
-        display_name=data.display_name,
+        display_name=data.display_name.strip(),
         role=data.role,
-        email=data.email,
-        branch=data.branch,
-        designation=data.designation
+        email=email,
+        branch=(data.branch or "").strip() or None,
+        designation=(data.designation or "").strip() or None,
     )
     
     db.add(new_user)

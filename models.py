@@ -9,13 +9,13 @@ from payload import strip_file_payloads
 
 
 class User(Base):
-    """Mirrors the USERS array hardcoded in the frontend (head / hr / employee)."""
+    """Mirrors the USERS array hardcoded in the frontend (clerk / accounts / employee)."""
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     username = Column(String(50), unique=True, index=True, nullable=False)
     password_hash = Column(String(255), nullable=False)
-    role = Column(String(20), nullable=False)          # head | hr | employee
+    role = Column(String(20), nullable=False)          # clerk | accounts | op_head | employee
     display_name = Column(String(100), nullable=False)
     
     # New Profile Fields

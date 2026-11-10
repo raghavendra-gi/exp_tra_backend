@@ -5,7 +5,7 @@ from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
-from deps import get_db, get_current_user
+from deps import get_db, get_current_user, CurrentUser
 from config import settings
 import models
 from schemas import FileOut
@@ -22,7 +22,7 @@ async def upload_file(
     file: UploadFile = File(...),
     field_key: str = Form(""),
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """
     Uploads a single receipt/photo before the expense itself is submitted -
@@ -60,7 +60,7 @@ async def upload_file(
 
 
 @router.get("/{file_id}")
-def download_file(file_id: str, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+def download_file(file_id: str, db: Session = Depends(get_db), current_user: CurrentUser = Depends(get_current_user)):
     asset = db.query(models.FileAsset).filter(models.FileAsset.id == file_id).first()
     if not asset or not os.path.exists(asset.storage_path):
         raise HTTPException(status_code=404, detail="File not found")
@@ -68,11 +68,11 @@ def download_file(file_id: str, db: Session = Depends(get_db), current_user: mod
 
 
 @router.delete("/{file_id}")
-def delete_file(file_id: str, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+def delete_file(file_id: str, db: Session = Depends(get_db), current_user: CurrentUser = Depends(get_current_user)):
     asset = db.query(models.FileAsset).filter(models.FileAsset.id == file_id).first()
     if not asset:
         raise HTTPException(status_code=404, detail="File not found")
-    if asset.uploaded_by != current_user.username and current_user.role not in ("head", "hr"):
+    if asset.uploaded_by != current_user.username and current_user.role not in ("clerk", "accounts"):
         raise HTTPException(status_code=403, detail="Not allowed")
 
     try:
