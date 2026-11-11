@@ -1,12 +1,11 @@
+# schemas.py
 from datetime import datetime
-from typing import Annotated, Optional, List
-from pydantic import BaseModel, Field, PlainSerializer
+from typing import Annotated, Optional, List, Literal
+from pydantic import BaseModel, Field, PlainSerializer, field_validator
 
 from timeutil import as_utc
 
-# Every datetime sent to the browser goes out as UTC with a trailing 'Z'
-# (e.g. 2026-10-05T06:51:00Z). Without the 'Z' the browser treats the value as
-# local time and shows the wrong hour.
+# Every datetime sent to the browser goes out as UTC with a trailing 'Z'.
 UTCDateTime = Annotated[datetime, PlainSerializer(as_utc, return_type=datetime)]
 
 
@@ -21,7 +20,6 @@ class UserOut(BaseModel):
     username: str
     display_name: str
     role: str
-    # 👇 ADDED THE NEW PROFILE FIELDS HERE 👇
     email: Optional[str] = None
     branch: Optional[str] = None
     designation: Optional[str] = None
@@ -37,7 +35,6 @@ class TokenResponse(BaseModel):
     user: UserOut
 
 
-# 👇 ADDED THE NEW SCHEMA FOR UPDATING PROFILE 👇
 class ProfileUpdate(BaseModel):
     username: Optional[str] = None
     email: Optional[str] = None
@@ -88,11 +85,14 @@ class DecisionRequest(BaseModel):
 class BulkDecisionRequest(BaseModel):
     ids: List[int]
     status: str
-    reason: Optional[str] = None      # comment applied to every selected expense
+    reason: Optional[str] = None
+
+
+class QueryRequest(BaseModel):
+    reason: str
 
 
 class ExpenseHistoryOut(BaseModel):
-    """Audit trail entry for an expense."""
     id: int
     at: UTCDateTime
     by: str
@@ -134,11 +134,26 @@ class StatsOut(BaseModel):
     in_progress: int
     in_progress_amount: float
 
+
+# ───────── Admin: create user ─────────
 class UserCreate(BaseModel):
     username: str
     password: str
     display_name: str
-    role: str = "employee"
+    # Was: role: str = "employee"
+    # `Literal` blocks "hr"/"head" at the schema layer — impossible to create
+    # legacy roles via the API from this point on.
+    role: Literal["employee", "clerk", "accounts", "op_head"] = "employee"
     email: Optional[str] = None
     branch: Optional[str] = None
     designation: Optional[str] = None
+
+    @field_validator("role", mode="before")
+    @classmethod
+    def _reject_legacy_roles(cls, v):
+        # Nicer message than the generic Literal error, in case an old
+        # frontend/client still sends "hr" or "head".
+        if isinstance(v, str) and v in ("hr", "head"):
+            replacement = "accounts" if v == "hr" else "clerk"
+            raise ValueError(f"role '{v}' is retired — use '{replacement}'")
+        return v

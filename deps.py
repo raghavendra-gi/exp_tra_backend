@@ -1,3 +1,4 @@
+# deps.py
 import logging
 import threading
 import time
@@ -10,6 +11,7 @@ from jose import JWTError, ExpiredSignatureError
 
 from database import SessionLocal
 from security import decode_access_token
+from roles import APPROVER_ROLES, CLERK, ACCOUNTS, OP_HEAD
 import models
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
@@ -26,7 +28,6 @@ class CurrentUser:
     username: str
     role: str
     display_name: str
-    # 👇 ADDED THESE 4 FIELDS 👇
     email: str | None
     branch: str | None
     designation: str | None
@@ -60,7 +61,8 @@ def _unauthorized(detail: str, reason: str) -> HTTPException:
     )
 
 
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> CurrentUser:
+def get_current_user(token: str = Depends(oauth2_scheme),
+                     db: Session = Depends(get_db)) -> CurrentUser:
     try:
         payload = decode_access_token(token)
     except ExpiredSignatureError:
@@ -77,29 +79,24 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     if hit and hit[0] > now:
         return hit[1]
 
-    # 👇 FIXED INDENTATION HERE 👇
     row = db.query(
-        models.User.id, models.User.username, models.User.role, models.User.display_name,
-        models.User.email, models.User.branch, models.User.designation, models.User.avatar
+        models.User.id, models.User.username, models.User.role,
+        models.User.display_name, models.User.email, models.User.branch,
+        models.User.designation, models.User.avatar,
     ).filter(models.User.username == username).first()
-    
+
     if row is None:
         raise _unauthorized(
             "Could not validate credentials",
             f"user '{username}' from the token does not exist in the connected database",
         )
-        
+
     user = CurrentUser(
-        id=row.id, 
-        username=row.username, 
-        role=row.role, 
-        display_name=row.display_name,
-        email=row.email,
-        branch=row.branch,
-        designation=row.designation,
-        avatar=row.avatar
+        id=row.id, username=row.username, role=row.role,
+        display_name=row.display_name, email=row.email,
+        branch=row.branch, designation=row.designation, avatar=row.avatar,
     )
-    
+
     with _user_cache_lock:
         if len(_user_cache) > 5000:
             _user_cache.clear()
@@ -107,8 +104,33 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     return user
 
 
+# ───────── Role guards ─────────
+
 def require_approver(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
-    """clerk, accounts, or op_head only - matches canApprove() in the frontend."""
-    if user.role not in ("clerk", "accounts", "op_head"):
+    """Any of: clerk (was Head), accounts (was HR), op_head.
+
+    All three approver roles are interchangeable: each may approve or reject
+    an expense. Mirrors `canApprove()` in the frontend.
+    """
+    if user.role not in APPROVER_ROLES:          # <-- uses the shared constant now
         raise HTTPException(status_code=403, detail="Approver role required")
+    return user
+
+
+# --- Only needed if you later want to restrict an endpoint to ONE approver ---
+def require_clerk(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    if user.role != CLERK:
+        raise HTTPException(status_code=403, detail="Clerk role required")
+    return user
+
+
+def require_accounts(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    if user.role != ACCOUNTS:
+        raise HTTPException(status_code=403, detail="Accounts role required")
+    return user
+
+
+def require_op_head(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    if user.role != OP_HEAD:
+        raise HTTPException(status_code=403, detail="Operation Head role required")
     return user

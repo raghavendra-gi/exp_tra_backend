@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from jose import jwt
@@ -38,7 +38,7 @@ def create_access_token(
         else settings.access_token_expire_minutes
     )
 
-    expire = datetime.utcnow() + timedelta(minutes=expire_minutes)
+    expire = datetime.now(timezone.utc) + timedelta(minutes=expire_minutes)
 
     to_encode.update({
         "exp": expire

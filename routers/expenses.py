@@ -1,5 +1,6 @@
 import csv
 import io
+import logging
 from collections import defaultdict
 from typing import Optional
 
@@ -8,19 +9,21 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import asc, desc, insert, select, update
 from sqlalchemy.orm import Session, selectinload
 
-from deps import get_db, get_current_user, require_approver
+from deps import get_db, get_current_user, require_approver, CurrentUser, APPROVER_ROLES
 from schemas import (
     ExpenseCreate, ExpenseUpdate, ExpenseOut, DecisionRequest,
-    BulkDecisionRequest, StatsOut,
+    BulkDecisionRequest, StatsOut, QueryRequest,
 )
 import models
 from payload import expense_dict, expense_from_orm, history_dict, json_response, strip_file_payloads
 from timeutil import utcnow, to_ist
 
 router = APIRouter()
+log = logging.getLogger("uvicorn.error")
 
 TWO_STAGE_TYPES = {"Regional Trip"}
-APPROVER_ROLES = ("clerk", "accounts", "op_head")
+
+QUERY_STATUS = "Query Raised"     # waiting for the employee to fix and resubmit
 
 # Columns the list endpoint may be sorted by. Anything else falls back to created_date.
 SORTABLE = {
@@ -94,7 +97,7 @@ def list_expenses(
     sort_dir: str = "desc",
     lite: bool = False,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """
     `lite=1` returns the same rows without attachment bytes — read from the
@@ -269,6 +272,7 @@ def update_expense(
       - In Progress -> closing leg of a two-stage trip (Regional Trip "end trip")
       - Pending      -> plain edit
       - Rejected     -> fix & resubmit
+      - Query Raised -> fix & resubmit (accounts asked for a correction)
     """
     e = _load_for_update(db, expense_id)
     if e.employee_id != current_user.username:
@@ -284,14 +288,19 @@ def update_expense(
         e.data = payload.data
         e.submitted_date = now
         _push_history(e, current_user.display_name, "Edited by employee", at=now)
-    elif e.status == "Rejected":
+    elif e.status in ("Rejected", QUERY_STATUS):
+        was_query = e.status == QUERY_STATUS
         e.data = payload.data
         e.status = "Pending"
         e.submitted_date = now
         e.decided_by = None
+        e.decided_by_role = None
         e.decided_date = None
         e.rejection_reason = None
-        _push_history(e, current_user.display_name, "Resubmitted for approval", at=now)
+        _push_history(
+            e, current_user.display_name,
+            "Resubmitted after query" if was_query else "Resubmitted for approval", at=now,
+        )
     else:
         raise HTTPException(status_code=400, detail="Approved expenses cannot be edited")
 
@@ -324,6 +333,8 @@ def decide_expense(
     e = _load_for_update(db, expense_id)
     if e.status == "In Progress":
         raise HTTPException(status_code=400, detail="That trip has not been submitted yet")
+    if e.status == QUERY_STATUS:
+        raise HTTPException(status_code=400, detail="A query is open - wait for the employee to resubmit")
 
     comment = (payload.reason or "").strip()
     now = utcnow()
@@ -331,6 +342,38 @@ def decide_expense(
         setattr(e, k, v)
     # the comment for either outcome is kept in the activity history
     _push_history(e, current_user.display_name, f"{payload.status} by {current_user.role}", comment, at=now)
+
+    db.commit()
+    return json_response(expense_from_orm(e))
+
+
+@router.post("/{expense_id}/query", response_model=ExpenseOut)
+def raise_query(
+    expense_id: int,
+    payload: QueryRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_approver),
+):
+    """
+    Accounts found a problem (e.g. an invalid bill) but the expense should not be
+    thrown away: send it back to the employee with a comment. The employee fixes it
+    and resubmits (PUT /{id}), which puts it back in Pending.
+    """
+    comment = (payload.reason or "").strip()
+    if not comment:
+        raise HTTPException(status_code=400, detail="Please write what the employee needs to correct")
+
+    e = _load_for_update(db, expense_id)
+    if e.status != "Pending":
+        raise HTTPException(status_code=400, detail="A query can only be raised on a pending expense")
+
+    now = utcnow()
+    e.status = QUERY_STATUS
+    e.decided_by = current_user.display_name
+    e.decided_by_role = current_user.role
+    e.decided_date = now
+    e.rejection_reason = None
+    _push_history(e, current_user.display_name, f"Query raised by {current_user.role}", comment, at=now)
 
     db.commit()
     return json_response(expense_from_orm(e))
@@ -352,7 +395,7 @@ def bulk_decide(
     if not payload.ids:
         return {"updated": 0}
 
-    eligible = (E.id.in_(payload.ids), E.status != "In Progress")
+    eligible = (E.id.in_(payload.ids), E.status.notin_(("In Progress", QUERY_STATUS)))
     ids = db.execute(select(E.id).where(*eligible)).scalars().all()
     if not ids:
         return {"updated": 0}
@@ -360,7 +403,7 @@ def bulk_decide(
     comment = (payload.reason or "").strip()
     now = utcnow()
     db.execute(
-        update(E).where(E.id.in_(ids), E.status != "In Progress")
+        update(E).where(E.id.in_(ids), E.status.notin_(("In Progress", QUERY_STATUS)))
         .values(**_decision_values(current_user, payload.status, comment, now))
         .execution_options(synchronize_session=False)
     )
@@ -375,13 +418,31 @@ def bulk_decide(
 
 @router.delete("/{expense_id}")
 def delete_expense(expense_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    row = db.execute(select(E.id, E.employee_id, E.status).where(E.id == expense_id)).first()
+    """
+    Employees delete their own expenses. Approvers (clerk / accounts / op_head) use
+    this for "Reject": the expense is removed totally. Approved expenses are never deleted.
+    """
+    row = db.execute(
+        select(E.id, E.employee_id, E.employee_name, E.type, E.status).where(E.id == expense_id)
+    ).first()
     if not row:
         raise HTTPException(status_code=404, detail="Expense not found")
-    if row.employee_id != current_user.username:
+
+    is_owner = row.employee_id == current_user.username
+    is_approver = current_user.role in APPROVER_ROLES
+    if not (is_owner or is_approver):
         raise HTTPException(status_code=403, detail="You can only delete your own expenses")
     if row.status == "Approved":
         raise HTTPException(status_code=400, detail="Approved expenses cannot be deleted")
+    if not is_owner and row.status == "In Progress":
+        raise HTTPException(status_code=400, detail="That trip has not been submitted yet")
+
+    # The history rows go with the expense, so keep a server-side trail of who removed what.
+    if not is_owner:
+        log.warning(
+            "Expense #%s (%s, %s, status %s) rejected and deleted by %s (%s)",
+            row.id, row.type, row.employee_name, row.status, current_user.username, current_user.role,
+        )
 
     # Same outcome as the old ORM delete: uploaded files are kept but unlinked,
     # and history rows go first (whether or not the database enforces ON DELETE CASCADE).
