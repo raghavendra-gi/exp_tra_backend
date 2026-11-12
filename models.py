@@ -1,5 +1,5 @@
 from sqlalchemy import (
-    Column, Integer, String, Text, DateTime, ForeignKey, JSON, Index, event, inspect
+    Column, Integer, String, Text, DateTime, ForeignKey, JSON, Index, event, inspect, Float, UniqueConstraint
 )
 from sqlalchemy.orm import relationship
 
@@ -99,6 +99,21 @@ def _data_lite_on_insert(mapper, connection, target):
 def _data_lite_on_update(mapper, connection, target):
     if inspect(target).attrs.data.history.has_changes():
         target.data_lite = strip_file_payloads(target.data)
+
+# In models.py
+class MonthlyFund(Base):
+    __tablename__ = "monthly_funds"
+
+    id = Column(Integer, primary_key=True, index=True)
+    year = Column(Integer, nullable=False)
+    month = Column(Integer, nullable=False) # 1 to 12
+    employee_id = Column(String(50), ForeignKey("users.username"), nullable=False, index=True)
+    amount = Column(Float, nullable=False, default=0.0)
+    updated_by = Column(String(50))
+
+    __table_args__ = (
+        UniqueConstraint("employee_id", "year", "month", name="uq_fund_employee_month"),
+    )
 
 
 EXTRA_INDEXES = [

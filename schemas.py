@@ -148,12 +148,17 @@ class UserCreate(BaseModel):
     branch: Optional[str] = None
     designation: Optional[str] = None
 
-    @field_validator("role", mode="before")
-    @classmethod
-    def _reject_legacy_roles(cls, v):
-        # Nicer message than the generic Literal error, in case an old
-        # frontend/client still sends "hr" or "head".
-        if isinstance(v, str) and v in ("hr", "head"):
-            replacement = "accounts" if v == "hr" else "clerk"
-            raise ValueError(f"role '{v}' is retired — use '{replacement}'")
-        return v
+    # In schemas.py
+class FundUpdateRequest(BaseModel):
+    employee_id: str          # username of the employee this fund is for
+    year: int
+    month: int
+    amount: float
+
+class FundOut(BaseModel):
+    employee_id: Optional[str] = None   # None = all employees combined
+    year: int
+    month: int
+    total_fund: float
+    spent_amount: float
+    remaining_amount: float
