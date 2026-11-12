@@ -1,6 +1,7 @@
 import csv
 import io
 import logging
+import math
 from collections import defaultdict
 from typing import Optional
 
@@ -9,10 +10,11 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import asc, desc, insert, select, update
 from sqlalchemy.orm import Session, selectinload
 
-from deps import get_db, get_current_user, require_approver, CurrentUser, APPROVER_ROLES
+from deps import get_db, get_current_user, require_approver, require_accounts, CurrentUser, APPROVER_ROLES
 from schemas import (
     ExpenseCreate, ExpenseUpdate, ExpenseOut, DecisionRequest,
     BulkDecisionRequest, StatsOut, QueryRequest,
+    FundUpdateRequest, FundOut,
 )
 import models
 from payload import expense_dict, expense_from_orm, history_dict, json_response, strip_file_payloads
@@ -198,6 +200,110 @@ def export_csv(
         headers={"Content-Disposition": "attachment; filename=expenses.csv"},
     )
 
+def _expense_month_key(e) -> str:
+    """'YYYY-MM' of an expense, tolerant of missing / non-string dates."""
+    data = e.data if isinstance(e.data, dict) else {}
+    for k in ("date", "startDate", "start_date", "fromDate", "expenseDate", "tripDate"):
+        v = data.get(k)
+        if isinstance(v, str) and len(v) >= 7:
+            return v[:7]
+    return e.created_date.strftime("%Y-%m") if e.created_date else ""
+
+
+@router.get("/fund/employees")
+def list_fund_employees(
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(require_approver),
+):
+    """Employees an Accounts user can allocate a fund to."""
+    rows = (
+        db.query(models.User)
+        .filter(models.User.role == "employee")
+        .order_by(models.User.display_name)
+        .all()
+    )
+    return [{"username": u.username, "display_name": u.display_name} for u in rows]
+
+
+@router.get("/fund", response_model=FundOut)
+def get_monthly_fund(
+    year: int,
+    month: int,
+    employee: Optional[str] = None,      # username; approvers only
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    is_approver = current_user.role in APPROVER_ROLES
+
+    # Employees can only ever see their OWN fund and spending.
+    # Approvers see one employee (when `employee` is given) or everyone combined.
+    target = employee if is_approver else current_user.username
+    target = target or None
+
+    fund_q = db.query(models.MonthlyFund).filter(
+        models.MonthlyFund.year == year,
+        models.MonthlyFund.month == month,
+    )
+    exp_q = db.query(models.Expense).filter(models.Expense.status == "Approved")
+    if target:
+        fund_q = fund_q.filter(models.MonthlyFund.employee_id == target)
+        exp_q = exp_q.filter(models.Expense.employee_id == target)
+
+    total_fund = float(sum(f.amount or 0.0 for f in fund_q.all()))
+
+    month_str = f"{year}-{month:02d}"
+    spent_amount = 0.0
+    for e in exp_q.all():
+        if _expense_month_key(e) == month_str:
+            spent_amount += _amount(e.data)
+
+    return {
+        "employee_id": target,
+        "year": year,
+        "month": month,
+        "total_fund": total_fund,
+        "spent_amount": spent_amount,
+        "remaining_amount": total_fund - spent_amount,
+    }
+
+
+@router.post("/fund")
+def set_monthly_fund(
+    payload: FundUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(require_accounts),  # Only Accounts can set the fund
+):
+    emp = db.query(models.User).filter(
+        models.User.username == payload.employee_id,
+        models.User.role == "employee",
+    ).first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    if payload.amount < 0:
+        raise HTTPException(status_code=422, detail="Amount cannot be negative")
+
+    fund = db.query(models.MonthlyFund).filter(
+        models.MonthlyFund.employee_id == payload.employee_id,
+        models.MonthlyFund.year == payload.year,
+        models.MonthlyFund.month == payload.month,
+    ).first()
+
+    if fund:
+        fund.amount = payload.amount
+        fund.updated_by = current_user.username
+    else:
+        fund = models.MonthlyFund(
+            employee_id=payload.employee_id,
+            year=payload.year,
+            month=payload.month,
+            amount=payload.amount,
+            updated_by=current_user.username,
+        )
+        db.add(fund)
+
+    db.commit()
+    return {"status": "success", "employee_id": payload.employee_id, "amount": fund.amount}
+
 
 @router.get("/{expense_id}", response_model=ExpenseOut)
 def get_expense(
@@ -227,6 +333,38 @@ def _load_for_update(db: Session, expense_id: int) -> models.Expense:
     return e
 
 
+def _clean_geo(data: dict) -> dict:
+    """
+    Locations saved with an expense live under keys that end in "Geo" (e.g. "fromGeo"):
+        { "lat": 16.5062, "lng": 80.648, "accuracy": 25, "at": "2026-11-12T05:30:00Z" }
+    The browser sends them, so never trust them: keep only well-formed points with real
+    coordinates and drop everything else (also removes the null the form sends after the
+    person types a place by hand).
+    """
+    for key in [k for k in data if isinstance(k, str) and k.endswith("Geo")]:
+        v = data.get(key)
+        cleaned = None
+        if isinstance(v, dict):
+            try:
+                lat, lng = float(v.get("lat")), float(v.get("lng"))
+                if -90 <= lat <= 90 and -180 <= lng <= 180:     # NaN / inf fail this test
+                    acc = v.get("accuracy")
+                    acc = round(float(acc), 1) if acc is not None and math.isfinite(float(acc)) and float(acc) >= 0 else None
+                    cleaned = {
+                        "lat": round(lat, 6),
+                        "lng": round(lng, 6),
+                        "accuracy": acc,
+                        "at": str(v.get("at") or "")[:40],
+                    }
+            except (TypeError, ValueError):
+                cleaned = None
+        if cleaned:
+            data[key] = cleaned
+        else:
+            data.pop(key, None)
+    return data
+
+
 def _push_history(expense: models.Expense, by: str, action: str, note: str = "", at=None):
     expense.history.append(H(by=by, action=action, note=note, at=at or utcnow()))
 
@@ -240,6 +378,7 @@ def create_expense(
     if current_user.role != "employee":
         raise HTTPException(status_code=403, detail="Only employees submit expenses")
 
+    payload.data = _clean_geo(payload.data)
     now = utcnow()
     is_start = payload.type in TWO_STAGE_TYPES and payload.stage == "start"
     expense = E(
@@ -278,6 +417,7 @@ def update_expense(
     if e.employee_id != current_user.username:
         raise HTTPException(status_code=403, detail="You can only edit your own expenses")
 
+    payload.data = _clean_geo(payload.data)
     now = utcnow()
     if e.status == "In Progress":
         e.data = {**(e.data or {}), **payload.data}
