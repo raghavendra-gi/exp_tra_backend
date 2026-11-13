@@ -212,17 +212,44 @@ def _expense_month_key(e) -> str:
 
 @router.get("/fund/employees")
 def list_fund_employees(
+    year: Optional[int] = None,
+    month: Optional[int] = None,
     db: Session = Depends(get_db),
     current_user: CurrentUser = Depends(require_approver),
 ):
-    """Employees an Accounts user can allocate a fund to."""
-    rows = (
+    """
+    Employees an Accounts user can allocate a fund to. When year+month are given,
+    each employee also carries the fund already set for that month (`amount`)
+    and for the month before it (`prev_amount`); null when nothing was set.
+    """
+    users = (
         db.query(models.User)
         .filter(models.User.role == "employee")
         .order_by(models.User.display_name)
         .all()
     )
-    return [{"username": u.username, "display_name": u.display_name} for u in rows]
+
+    def _amounts(y: int, m: int) -> dict:
+        rows = db.query(models.MonthlyFund).filter(
+            models.MonthlyFund.year == y, models.MonthlyFund.month == m
+        ).all()
+        return {r.employee_id: r.amount for r in rows}
+
+    this_month, last_month = {}, {}
+    if year and month and 1 <= month <= 12:
+        this_month = _amounts(year, month)
+        py, pm = (year, month - 1) if month > 1 else (year - 1, 12)
+        last_month = _amounts(py, pm)
+
+    return [
+        {
+            "username": u.username,
+            "display_name": u.display_name,
+            "amount": this_month.get(u.username),
+            "prev_amount": last_month.get(u.username),
+        }
+        for u in users
+    ]
 
 
 @router.get("/fund", response_model=FundOut)
