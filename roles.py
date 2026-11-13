@@ -14,10 +14,13 @@ ACCOUNTS = "accounts"
 OP_HEAD  = "op_head"
 
 # Who can approve / reject an expense.
-APPROVER_ROLES: tuple[str, ...] = (CLERK, ACCOUNTS, OP_HEAD, "manager")
+APPROVER_ROLES: tuple[str, ...] = (ACCOUNTS, OP_HEAD)
+
+# Who can file bills: employees and clerks.
+FILER_ROLES: tuple[str, ...] = (EMPLOYEE, CLERK)
 
 # Every role that is allowed to exist on a user account.
-ALLOWED_ROLES: tuple[str, ...] = (EMPLOYEE, CLERK, ACCOUNTS, OP_HEAD, "manager")
+ALLOWED_ROLES: tuple[str, ...] = (EMPLOYEE, CLERK, ACCOUNTS, OP_HEAD)
 
 # Human-friendly labels (frontend, PDF exports, history rendering, …).
 ROLE_LABELS: dict[str, str] = {

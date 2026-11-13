@@ -11,6 +11,7 @@ from sqlalchemy import asc, desc, insert, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from deps import get_db, get_current_user, require_approver, require_accounts, CurrentUser, APPROVER_ROLES
+from roles import FILER_ROLES
 from schemas import (
     ExpenseCreate, ExpenseUpdate, ExpenseOut, DecisionRequest,
     BulkDecisionRequest, StatsOut, QueryRequest,
@@ -224,7 +225,7 @@ def list_fund_employees(
     """
     users = (
         db.query(models.User)
-        .filter(models.User.role == "employee")
+        .filter(models.User.role.in_(FILER_ROLES))
         .order_by(models.User.display_name)
         .all()
     )
@@ -302,7 +303,7 @@ def set_monthly_fund(
 ):
     emp = db.query(models.User).filter(
         models.User.username == payload.employee_id,
-        models.User.role == "employee",
+        models.User.role.in_(FILER_ROLES),
     ).first()
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
@@ -402,8 +403,8 @@ def create_expense(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    if current_user.role != "employee":
-        raise HTTPException(status_code=403, detail="Only employees submit expenses")
+    if current_user.role not in FILER_ROLES:
+        raise HTTPException(status_code=403, detail="Only employees and clerks submit expenses")
 
     payload.data = _clean_geo(payload.data)
     now = utcnow()
