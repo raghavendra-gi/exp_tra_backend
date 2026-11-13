@@ -140,10 +140,8 @@ class UserCreate(BaseModel):
     username: str
     password: str
     display_name: str
-    # Was: role: str = "employee"
-    # `Literal` blocks "hr"/"head" at the schema layer — impossible to create
-    # legacy roles via the API from this point on.
-    role: Literal["employee", "clerk", "accounts", "op_head"] = "employee"
+    # Changed to `str` to allow custom roles (e.g. "manager", "auditor")
+    role: str = "employee"
     email: Optional[str] = None
     branch: Optional[str] = None
     designation: Optional[str] = None
