@@ -32,6 +32,7 @@ class CurrentUser:
     branch: str | None
     designation: str | None
     avatar: str | None
+    role_title: str | None = None
 
 
 _user_cache: dict = {}
@@ -82,7 +83,7 @@ def get_current_user(token: str = Depends(oauth2_scheme),
     row = db.query(
         models.User.id, models.User.username, models.User.role,
         models.User.display_name, models.User.email, models.User.branch,
-        models.User.designation, models.User.avatar,
+        models.User.designation, models.User.avatar, models.User.role_title,
     ).filter(models.User.username == username).first()
 
     if row is None:
@@ -95,6 +96,7 @@ def get_current_user(token: str = Depends(oauth2_scheme),
         id=row.id, username=row.username, role=row.role,
         display_name=row.display_name, email=row.email,
         branch=row.branch, designation=row.designation, avatar=row.avatar,
+        role_title=row.role_title,
     )
 
     with _user_cache_lock:
@@ -107,7 +109,7 @@ def get_current_user(token: str = Depends(oauth2_scheme),
 # ───────── Role guards ─────────
 
 def require_approver(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
-    """Any of: clerk (was Head), accounts (was HR), op_head.
+    """Any of: accounts, op_head.
 
     All three approver roles are interchangeable: each may approve or reject
     an expense. Mirrors `canApprove()` in the frontend.
