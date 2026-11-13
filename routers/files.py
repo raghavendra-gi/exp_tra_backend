@@ -72,7 +72,7 @@ def delete_file(file_id: str, db: Session = Depends(get_db), current_user: Curre
     asset = db.query(models.FileAsset).filter(models.FileAsset.id == file_id).first()
     if not asset:
         raise HTTPException(status_code=404, detail="File not found")
-    if asset.uploaded_by != current_user.username and current_user.role not in ("clerk", "accounts"):
+    if asset.uploaded_by != current_user.username and current_user.role not in ("accounts", "op_head"):
         raise HTTPException(status_code=403, detail="Not allowed")
 
     try:
