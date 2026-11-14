@@ -77,6 +77,16 @@ class ExpenseUpdate(BaseModel):
     data: dict
 
 
+class BillCheckItem(BaseModel):
+    hash: str                         # SHA-256 (hex) of the bill's bytes
+    name: Optional[str] = None
+
+
+class BillCheckRequest(BaseModel):
+    items: List[BillCheckItem] = Field(default_factory=list, max_length=20)
+    expense_id: Optional[int] = None  # the request being edited, so it never clashes with itself
+
+
 class DecisionRequest(BaseModel):
     status: str                       # Approved | Rejected
     reason: Optional[str] = None

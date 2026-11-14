@@ -12,8 +12,9 @@ from sqlalchemy.orm import Session, selectinload
 
 from deps import get_db, get_current_user, require_approver, require_accounts, CurrentUser, APPROVER_ROLES
 from roles import FILER_ROLES
+import bills
 from schemas import (
-    ExpenseCreate, ExpenseUpdate, ExpenseOut, DecisionRequest,
+    ExpenseCreate, ExpenseUpdate, ExpenseOut, DecisionRequest, BillCheckRequest,
     BulkDecisionRequest, StatsOut, QueryRequest,
     FundUpdateRequest, FundOut,
 )
@@ -46,7 +47,7 @@ _BASE_COLUMNS = (
 
 
 def _visible(stmt, user: models.User):
-    """Employees only ever see their own requests; head/hr see everything."""
+    """Employees and clerks only ever see their own requests; accounts/op_head see everything."""
     if user.role not in APPROVER_ROLES:
         stmt = stmt.where(E.employee_id == user.username)
     return stmt
@@ -397,6 +398,26 @@ def _push_history(expense: models.Expense, by: str, action: str, note: str = "",
     expense.history.append(H(by=by, action=action, note=note, at=at or utcnow()))
 
 
+@router.post("/check-bills")
+def check_bills(
+    payload: BillCheckRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    """
+    Early warning while filling the form: which of these bill fingerprints are already on file?
+    The authoritative check still runs when the expense is saved (create / update).
+    """
+    if current_user.role not in FILER_ROLES:
+        raise HTTPException(status_code=403, detail="Only employees and clerks submit expenses")
+    found = [
+        bills.Bill("receipt", (i.name or "bill")[:255], i.hash.lower())
+        for i in payload.items if bills.is_sha256(i.hash.lower())
+    ]
+    messages = bills.duplicate_messages(db, found, current_user.username, payload.expense_id)
+    return {"duplicates": [{"hash": h, "message": m} for h, m in messages.items()]}
+
+
 @router.post("", response_model=ExpenseOut)
 def create_expense(
     payload: ExpenseCreate,
@@ -407,6 +428,7 @@ def create_expense(
         raise HTTPException(status_code=403, detail="Only employees and clerks submit expenses")
 
     payload.data = _clean_geo(payload.data)
+    bill_list = bills.reject_duplicates(db, payload.data, current_user.username)   # 409 on a duplicate bill
     now = utcnow()
     is_start = payload.type in TWO_STAGE_TYPES and payload.stage == "start"
     expense = E(
@@ -423,6 +445,7 @@ def create_expense(
 
     db.add(expense)
     db.commit()            # objects stay loaded after commit (expire_on_commit=False): no re-read
+    bills.save(db, expense.id, current_user.username, bill_list)
     _attach_pending_files(db, expense, payload.data)
     return json_response(expense_from_orm(expense))
 
@@ -446,6 +469,7 @@ def update_expense(
         raise HTTPException(status_code=403, detail="You can only edit your own expenses")
 
     payload.data = _clean_geo(payload.data)
+    bills.reject_duplicates(db, payload.data, current_user.username, exclude_expense_id=e.id)   # 409 on a duplicate bill
     now = utcnow()
     if e.status == "In Progress":
         e.data = {**(e.data or {}), **payload.data}
@@ -473,6 +497,7 @@ def update_expense(
         raise HTTPException(status_code=400, detail="Approved expenses cannot be edited")
 
     db.commit()
+    bills.save(db, e.id, e.employee_id, bills.collect(e.data))   # e.data is the final, merged data
     _attach_pending_files(db, e, payload.data)
     return json_response(expense_from_orm(e))
 
@@ -587,7 +612,7 @@ def bulk_decide(
 @router.delete("/{expense_id}")
 def delete_expense(expense_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     """
-    Employees delete their own expenses. Approvers (clerk / accounts / op_head) use
+    Employees delete their own expenses. Approvers (accounts / op_head) use
     this for "Reject": the expense is removed totally. Approved expenses are never deleted.
     """
     row = db.execute(
@@ -618,6 +643,7 @@ def delete_expense(expense_id: int, db: Session = Depends(get_db), current_user:
         {models.FileAsset.expense_id: None}, synchronize_session=False
     )
     db.query(H).filter(H.expense_id == expense_id).delete(synchronize_session=False)
+    db.query(models.BillHash).filter(models.BillHash.expense_id == expense_id).delete(synchronize_session=False)
     db.query(E).filter(E.id == expense_id).delete(synchronize_session=False)
     db.commit()
     return {"deleted": True}
