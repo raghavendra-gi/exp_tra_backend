@@ -111,8 +111,9 @@ def get_current_user(token: str = Depends(oauth2_scheme),
 def require_approver(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
     """Any of: accounts, op_head.
 
-    All three approver roles are interchangeable: each may approve or reject
-    an expense. Mirrors `canApprove()` in the frontend.
+    Both approver roles are interchangeable: each may approve or reject
+    an expense. Mirrors `isApproverRole()` in the frontend. Clerks are NOT
+    approvers - they file bills like employees.
     """
     if user.role not in APPROVER_ROLES:          # <-- uses the shared constant now
         raise HTTPException(status_code=403, detail="Approver role required")
