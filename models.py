@@ -91,19 +91,6 @@ class FileAsset(Base):
     expense = relationship("Expense", back_populates="files")
 
 
-class BillHash(Base):
-    """SHA-256 fingerprint of one attached bill (see bills.py) - used to catch duplicate bills."""
-    __tablename__ = "bill_hashes"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    sha256 = Column(String(64), nullable=False, index=True)
-    expense_id = Column(Integer, ForeignKey("expenses.id", ondelete="CASCADE"), nullable=False, index=True)
-    employee_id = Column(String(50), nullable=False)
-    field_key = Column(String(50), nullable=True)
-    filename = Column(String(255), nullable=True)
-    created_at = Column(DateTime, default=utcnow)
-
-
 @event.listens_for(Expense, "before_insert")
 def _data_lite_on_insert(mapper, connection, target):
     target.data_lite = strip_file_payloads(target.data)

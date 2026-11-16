@@ -1,0 +1,134 @@
+"""
+fix_duplicate_bills.py - make the duplicate-bill check look inside ONE expense only.
+
+Run it from any terminal:
+
+    python fix_duplicate_bills.py                      # searches your whole user folder
+    python fix_duplicate_bills.py "C:\\path\\to\\app"      # or give the backend's app folder
+
+It replaces every bills.py it finds (each old file is kept as bills.py.bak) and then tells you
+what is running on port 8000, because the backend must be restarted for the change to apply.
+"""
+import base64
+import os
+import socket
+import subprocess
+import sys
+
+NEW_BILLS_PY = base64.b64decode(
+    "IiIiCkR1cGxpY2F0ZS1iaWxsIGRldGVjdGlvbiAtIGluc2lkZSBPTkUgZXhwZW5zZSBvbmx5LgoKVGhlIGZpbGVzIGF0dGFjaGVk"
+    "IHRvIGEgYmlsbCBmaWVsZCAoYHJlY2VpcHRgLCBgdGlja2V0QmlsbGApIGFyZSBmaW5nZXJwcmludGVkIHdpdGggU0hBLTI1Ngpv"
+    "dmVyIHRoZWlyIGJ5dGVzLiBJZiB0aGUgc2FtZSBmaWxlIGlzIGF0dGFjaGVkIHR3aWNlIHRvIHRoZSBzYW1lIGV4cGVuc2UgKGZv"
+    "ciBleGFtcGxlIG9uZQpiaWxsIHVwbG9hZGVkIGZvciBib3RoIEx1bmNoIGFuZCBEaW5uZXIpIHRoZSByZXF1ZXN0IGlzIHJlamVj"
+    "dGVkIHdpdGggNDA5LgoKTm90aGluZyBpcyBjb21wYXJlZCBhY3Jvc3MgZXhwZW5zZXM6IHRoZSBzYW1lIGJpbGwgb24gYW5vdGhl"
+    "ciByZXF1ZXN0LCBieSB5b3Ugb3IgYnkgYW55b25lCmVsc2UsIGlzIGFjY2VwdGVkLiBOb3RoaW5nIGlzIHJlYWQgZnJvbSBvciB3"
+    "cml0dGVuIHRvIHRoZSBkYXRhYmFzZSBmb3IgdGhpcyBjaGVjay4KCk9ubHkgaWRlbnRpY2FsIGZpbGVzIGFyZSBjYXVnaHQuIFR3"
+    "byBkaWZmZXJlbnQgcGhvdG9zIG9mIG9uZSBwYXBlciBiaWxsIGhhdmUgZGlmZmVyZW50CmJ5dGVzLCBzbyB0aGV5IGFyZSBub3Qg"
+    "ZGV0ZWN0ZWQuCgpDb21wYXRpYmlsaXR5OiBhbiBlYXJsaWVyIHZlcnNpb24gb2Ygcm91dGVycy9leHBlbnNlcy5weSBjYWxsZWQg"
+    "dGhlc2UgZnVuY3Rpb25zIHdpdGggYQpkYXRhYmFzZSBzZXNzaW9uIGFuZCBhbHNvIHNhdmVkIGZpbmdlcnByaW50cyAocmVqZWN0"
+    "X2R1cGxpY2F0ZXMoZGIsIGRhdGEsIHVzZXIpLCBzYXZlKC4uLiksCmR1cGxpY2F0ZV9tZXNzYWdlcyguLi4pKS4gVGhvc2UgY2Fs"
+    "bHMgc3RpbGwgd29yayBhbmQgZG8gbm90aGluZyBiZXlvbmQgdGhlIG9uZS1leHBlbnNlCmNoZWNrLCBzbyB0aGlzIHNpbmdsZSBm"
+    "aWxlIGlzIGVub3VnaCB0byBzd2l0Y2ggdGhlIHJ1bGUsIHdoaWNoZXZlciBleHBlbnNlcy5weSB5b3UgaGF2ZS4KIiIiCmltcG9y"
+    "dCBiYXNlNjQKaW1wb3J0IGhhc2hsaWIKaW1wb3J0IGxvZ2dpbmcKaW1wb3J0IHJlCmZyb20gZGF0YWNsYXNzZXMgaW1wb3J0IGRh"
+    "dGFjbGFzcwpmcm9tIHR5cGluZyBpbXBvcnQgT3B0aW9uYWwKCmZyb20gZmFzdGFwaSBpbXBvcnQgSFRUUEV4Y2VwdGlvbgoKbG9n"
+    "Z2luZy5nZXRMb2dnZXIoInV2aWNvcm4uZXJyb3IiKS5pbmZvKCJbYmlsbHNdIGR1cGxpY2F0ZSBiaWxscyBhcmUgY2hlY2tlZCBp"
+    "bnNpZGUgb25lIGV4cGVuc2Ugb25seSIpCgojIEZpZWxkcyBvZiBhbiBleHBlbnNlIHRoYXQgaG9sZCBiaWxscy4gTWV0ZXIgcGhv"
+    "dG9zIGFyZSBkZWxpYmVyYXRlbHkgbm90IGxpc3RlZC4KQklMTF9GSUVMRFMgPSAoInJlY2VpcHQiLCAidGlja2V0QmlsbCIpCgpf"
+    "SEVYNjQgPSByZS5jb21waWxlKHIiXlswLTlhLWZdezY0fSQiKQoKCkBkYXRhY2xhc3MKY2xhc3MgQmlsbDoKICAgIGZpZWxkOiBz"
+    "dHIKICAgIG5hbWU6IHN0cgogICAgc2hhMjU2OiBzdHIKCgpkZWYgaXNfc2hhMjU2KHZhbHVlKSAtPiBib29sOgogICAgcmV0dXJu"
+    "IGlzaW5zdGFuY2UodmFsdWUsIHN0cikgYW5kIGJvb2woX0hFWDY0Lm1hdGNoKHZhbHVlKSkKCgpkZWYgX2RlY29kZV9kYXRhX3Vy"
+    "bCh1cmwpIC0+IE9wdGlvbmFsW2J5dGVzXToKICAgICIiIkJ5dGVzIG9mIGEgYGRhdGE6PHR5cGU+O2Jhc2U2NCw8cGF5bG9hZD5g"
+    "IFVSTCwgb3IgTm9uZSBpZiBpdCBpcyBub3Qgb25lLiIiIgogICAgaWYgbm90IGlzaW5zdGFuY2UodXJsLCBzdHIpIG9yICIsIiBu"
+    "b3QgaW4gdXJsOgogICAgICAgIHJldHVybiBOb25lCiAgICB0cnk6CiAgICAgICAgcmV0dXJuIGJhc2U2NC5iNjRkZWNvZGUodXJs"
+    "LnNwbGl0KCIsIiwgMSlbMV0sIHZhbGlkYXRlPUZhbHNlKQogICAgZXhjZXB0IChWYWx1ZUVycm9yLCBUeXBlRXJyb3IpOgogICAg"
+    "ICAgIHJldHVybiBOb25lCgoKZGVmIGNvbGxlY3QoZGF0YSkgLT4gbGlzdFtCaWxsXToKICAgICIiIkZpbmdlcnByaW50IG9mIGV2"
+    "ZXJ5IGJpbGwgZmlsZSBpbiBhbiBleHBlbnNlJ3MgYGRhdGFgLiIiIgogICAgYmlsbHM6IGxpc3RbQmlsbF0gPSBbXQogICAgaWYg"
+    "bm90IGlzaW5zdGFuY2UoZGF0YSwgZGljdCk6CiAgICAgICAgcmV0dXJuIGJpbGxzCiAgICBmb3IgZmllbGQgaW4gQklMTF9GSUVM"
+    "RFM6CiAgICAgICAgaXRlbXMgPSBkYXRhLmdldChmaWVsZCkKICAgICAgICBpZiBub3QgaXNpbnN0YW5jZShpdGVtcywgbGlzdCk6"
+    "CiAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgZm9yIGl0ZW0gaW4gaXRlbXM6CiAgICAgICAgICAgIHJhdyA9IF9kZWNvZGVf"
+    "ZGF0YV91cmwoaXRlbS5nZXQoImRhdGFVcmwiKSkgaWYgaXNpbnN0YW5jZShpdGVtLCBkaWN0KSBlbHNlIE5vbmUKICAgICAgICAg"
+    "ICAgaWYgcmF3OgogICAgICAgICAgICAgICAgYmlsbHMuYXBwZW5kKEJpbGwoZmllbGQsIHN0cihpdGVtLmdldCgibmFtZSIpIG9y"
+    "ICJiaWxsIilbOjI1NV0sIGhhc2hsaWIuc2hhMjU2KHJhdykuaGV4ZGlnZXN0KCkpKQogICAgcmV0dXJuIGJpbGxzCgoKZGVmIHJl"
+    "amVjdF9kdXBsaWNhdGVzKCphcmdzLCAqKl9pZ25vcmVkKSAtPiBsaXN0W0JpbGxdOgogICAgIiIiCiAgICBSYWlzZSA0MDkgd2hl"
+    "biB0aGUgc2FtZSBmaWxlIGlzIGF0dGFjaGVkIG1vcmUgdGhhbiBvbmNlIHRvIHRoaXMgZXhwZW5zZS4KICAgIENhbGwgaXQgYXMg"
+    "cmVqZWN0X2R1cGxpY2F0ZXMoZGF0YSk7IHRoZSBvbGRlciByZWplY3RfZHVwbGljYXRlcyhkYiwgZGF0YSwgdXNlcm5hbWUsIC4u"
+    "LikgYWxzbyB3b3Jrcy4KICAgICIiIgogICAgZGF0YSA9IG5leHQoKGEgZm9yIGEgaW4gYXJncyBpZiBpc2luc3RhbmNlKGEsIGRp"
+    "Y3QpKSwgTm9uZSkKICAgIGJpbGxzID0gY29sbGVjdChkYXRhKQogICAgc2Vlbjogc2V0ID0gc2V0KCkKICAgIHJlcGVhdGVkOiBs"
+    "aXN0ID0gW10KICAgIGZvciBiIGluIGJpbGxzOgogICAgICAgIGlmIGIuc2hhMjU2IGluIHNlZW46CiAgICAgICAgICAgIHJlcGVh"
+    "dGVkLmFwcGVuZChiLm5hbWUpCiAgICAgICAgc2Vlbi5hZGQoYi5zaGEyNTYpCiAgICBpZiByZXBlYXRlZDoKICAgICAgICBuYW1l"
+    "cyA9ICIsICIuam9pbihmJyJ7bn0iJyBmb3IgbiBpbiBkaWN0LmZyb21rZXlzKHJlcGVhdGVkKSkKICAgICAgICByYWlzZSBIVFRQ"
+    "RXhjZXB0aW9uKAogICAgICAgICAgICBzdGF0dXNfY29kZT00MDksCiAgICAgICAgICAgIGRldGFpbD1mIkR1cGxpY2F0ZSBiaWxs"
+    "OiB7bmFtZXN9IGlzIGF0dGFjaGVkIG1vcmUgdGhhbiBvbmNlLiBLZWVwIG9ubHkgb25lIGNvcHkuIiwKICAgICAgICApCiAgICBy"
+    "ZXR1cm4gYmlsbHMKCgpkZWYgZHVwbGljYXRlX21lc3NhZ2VzKCpfYXJncywgKipfa3dhcmdzKSAtPiBkaWN0OgogICAgIiIiQ29t"
+    "cGF0aWJpbGl0eTogb3RoZXIgZXhwZW5zZXMgYXJlIG5ldmVyIHNlYXJjaGVkLCBzbyB0aGVyZSBpcyBuZXZlciBhbnl0aGluZyB0"
+    "byByZXBvcnQuIiIiCiAgICByZXR1cm4ge30KCgpkZWYgc2F2ZSgqX2FyZ3MsICoqX2t3YXJncykgLT4gTm9uZToKICAgICIiIkNv"
+    "bXBhdGliaWxpdHk6IG5vdGhpbmcgaXMgc3RvcmVkIGFueSBtb3JlLiIiIgo="
+)
+MARK = b"Duplicate-bill detection"
+SKIP = {"node_modules", ".git", "site-packages", "AppData", "__pycache__", "$Recycle.Bin", "Windows"}
+
+
+def find_copies(root):
+    for folder, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if d not in SKIP]
+        if "bills.py" in files:
+            path = os.path.join(folder, "bills.py")
+            try:
+                with open(path, "rb") as fh:
+                    if MARK in fh.read():
+                        yield path
+            except OSError:
+                pass
+
+
+def main():
+    target = sys.argv[1] if len(sys.argv) > 1 else os.path.expanduser("~")
+    if os.path.isfile(os.path.join(target, "main.py")):          # the backend's app folder was given
+        paths = [os.path.join(target, "bills.py")]
+        if not os.path.exists(paths[0]):
+            open(paths[0], "wb").close()
+            paths = [paths[0]]
+    else:
+        print("Searching", target, "...")
+        paths = list(find_copies(target))
+    if not paths:
+        print("No bills.py found. Run again with the backend's app folder, e.g.:")
+        print('   python fix_duplicate_bills.py "C:\\Users\\GK\\Downloads\\expense_tracker_backend\\expense_tracker_backend\\app"')
+        return
+    new_text = NEW_BILLS_PY.replace(b"\r\n", b"\n")
+    for p in paths:
+        with open(p, "rb") as fh:
+            old = fh.read()
+        if old.replace(b"\r\n", b"\n") == new_text:
+            print("already up to date :", p)
+            continue
+        if old:
+            with open(p + ".bak", "wb") as fh:
+                fh.write(old)
+        with open(p, "wb") as fh:
+            fh.write(new_text)
+        print("UPDATED            :", p)
+
+    print()
+    s = socket.socket()
+    s.settimeout(1)
+    busy = s.connect_ex(("127.0.0.1", 8000)) == 0
+    s.close()
+    if busy:
+        print("Something is running on port 8000 - that is the OLD backend. Close it, then start it again:")
+        try:
+            out = subprocess.run(["netstat", "-ano"], capture_output=True, text=True).stdout
+            for line in out.splitlines():
+                if ":8000" in line and "LISTENING" in line:
+                    pid = line.split()[-1]
+                    print("   found PID", pid, "->  taskkill /PID", pid, "/F")
+        except OSError:
+            pass
+    else:
+        print("Port 8000 is free - the backend is not running.")
+    print("Then, in the backend's app folder:   python -m uvicorn main:app")
+    print("The terminal must show:  [bills] duplicate bills are checked inside one expense only")
+
+
+if __name__ == "__main__":
+    main()
