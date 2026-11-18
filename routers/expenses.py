@@ -14,13 +14,16 @@ from deps import get_db, get_current_user, require_approver, require_accounts, C
 from roles import FILER_ROLES
 import bills
 from schemas import (
-    ExpenseCreate, ExpenseUpdate, ExpenseOut, DecisionRequest, BillCheckRequest,
+    ExpenseCreate, ExpenseUpdate, ExpenseOut, DecisionRequest,
     BulkDecisionRequest, StatsOut, QueryRequest,
     FundUpdateRequest, FundOut,
 )
 import models
 from payload import expense_dict, expense_from_orm, history_dict, json_response, strip_file_payloads
 from timeutil import utcnow, to_ist
+
+from roles import FILER_ROLES, CHAIRMAN
+from payload import expense_dict, expense_from_orm, history_dict, json_response, strip_file_payloads, strip_geo
 
 router = APIRouter()
 log = logging.getLogger("uvicorn.error")
@@ -51,6 +54,10 @@ def _visible(stmt, user: models.User):
     if user.role not in APPROVER_ROLES:
         stmt = stmt.where(E.employee_id == user.username)
     return stmt
+
+def _for_user(user, data):
+    """The Chairman verifies bills but must not receive GPS locations."""
+    return strip_geo(data) if user.role == CHAIRMAN else data
 
 
 def _amount(data) -> float:
@@ -133,7 +140,7 @@ def list_expenses(
     out = []
     for r in rows:
         data = strip_file_payloads(full[r.id]) if r.id in full else r.payload
-        out.append(expense_dict(r, data, history.get(r.id, ())))
+        out.append(expense_dict(r, _for_user(current_user, data), history.get(r.id, ())))
     return json_response(out, request)
 
 
@@ -347,7 +354,7 @@ def get_expense(
     if not row:
         raise HTTPException(status_code=404, detail="Expense not found")
     history = _history_by_expense(db, [row.id])
-    return json_response(expense_dict(row, row.payload, history.get(row.id, ())), request)
+    return json_response(expense_dict(row, _for_user(current_user, row.payload), history.get(row.id, ())), request)
 
 
 def _load_for_update(db: Session, expense_id: int) -> models.Expense:
@@ -398,26 +405,6 @@ def _push_history(expense: models.Expense, by: str, action: str, note: str = "",
     expense.history.append(H(by=by, action=action, note=note, at=at or utcnow()))
 
 
-@router.post("/check-bills")
-def check_bills(
-    payload: BillCheckRequest,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
-):
-    """
-    Early warning while filling the form: which of these bill fingerprints are already on file?
-    The authoritative check still runs when the expense is saved (create / update).
-    """
-    if current_user.role not in FILER_ROLES:
-        raise HTTPException(status_code=403, detail="Only employees and clerks submit expenses")
-    found = [
-        bills.Bill("receipt", (i.name or "bill")[:255], i.hash.lower())
-        for i in payload.items if bills.is_sha256(i.hash.lower())
-    ]
-    messages = bills.duplicate_messages(db, found, current_user.username, payload.expense_id)
-    return {"duplicates": [{"hash": h, "message": m} for h, m in messages.items()]}
-
-
 @router.post("", response_model=ExpenseOut)
 def create_expense(
     payload: ExpenseCreate,
@@ -428,7 +415,7 @@ def create_expense(
         raise HTTPException(status_code=403, detail="Only employees and clerks submit expenses")
 
     payload.data = _clean_geo(payload.data)
-    bill_list = bills.reject_duplicates(db, payload.data, current_user.username)   # 409 on a duplicate bill
+    bills.reject_duplicates(payload.data)          # 409 if the same bill is attached twice
     now = utcnow()
     is_start = payload.type in TWO_STAGE_TYPES and payload.stage == "start"
     expense = E(
@@ -445,7 +432,6 @@ def create_expense(
 
     db.add(expense)
     db.commit()            # objects stay loaded after commit (expire_on_commit=False): no re-read
-    bills.save(db, expense.id, current_user.username, bill_list)
     _attach_pending_files(db, expense, payload.data)
     return json_response(expense_from_orm(expense))
 
@@ -469,7 +455,7 @@ def update_expense(
         raise HTTPException(status_code=403, detail="You can only edit your own expenses")
 
     payload.data = _clean_geo(payload.data)
-    bills.reject_duplicates(db, payload.data, current_user.username, exclude_expense_id=e.id)   # 409 on a duplicate bill
+    bills.reject_duplicates(payload.data)          # 409 if the same bill is attached twice
     now = utcnow()
     if e.status == "In Progress":
         e.data = {**(e.data or {}), **payload.data}
@@ -497,7 +483,6 @@ def update_expense(
         raise HTTPException(status_code=400, detail="Approved expenses cannot be edited")
 
     db.commit()
-    bills.save(db, e.id, e.employee_id, bills.collect(e.data))   # e.data is the final, merged data
     _attach_pending_files(db, e, payload.data)
     return json_response(expense_from_orm(e))
 
@@ -537,7 +522,9 @@ def decide_expense(
     _push_history(e, current_user.display_name, f"{payload.status} by {current_user.role}", comment, at=now)
 
     db.commit()
-    return json_response(expense_from_orm(e))
+    out = expense_from_orm(e)
+    out["data"] = _for_user(current_user, out["data"])
+    return json_response(out)
 
 
 @router.post("/{expense_id}/query", response_model=ExpenseOut)
@@ -569,7 +556,9 @@ def raise_query(
     _push_history(e, current_user.display_name, f"Query raised by {current_user.role}", comment, at=now)
 
     db.commit()
-    return json_response(expense_from_orm(e))
+    out = expense_from_orm(e)
+    out["data"] = _for_user(current_user, out["data"])
+    return json_response(out)
 
 
 @router.post("/bulk-decide")
@@ -643,7 +632,6 @@ def delete_expense(expense_id: int, db: Session = Depends(get_db), current_user:
         {models.FileAsset.expense_id: None}, synchronize_session=False
     )
     db.query(H).filter(H.expense_id == expense_id).delete(synchronize_session=False)
-    db.query(models.BillHash).filter(models.BillHash.expense_id == expense_id).delete(synchronize_session=False)
     db.query(E).filter(E.id == expense_id).delete(synchronize_session=False)
     db.commit()
     return {"deleted": True}
