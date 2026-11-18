@@ -1,0 +1,31 @@
+# secrets / local config
+.env
+app/.env
+*.env
+!.env.example
+envs
+
+
+# uploaded files
+app/storage/
+storage/
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# local databases
+*.db
+*.sqlite3
+
+# editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.log
