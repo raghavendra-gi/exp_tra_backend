@@ -117,6 +117,28 @@ class MonthlyFund(Base):
     )
 
 
+class LocationPing(Base):
+    """
+    One GPS point reported by an employee's phone while a trip is In Progress.
+    recorded_at = when the phone measured it (UTC); received_at = when the server stored it.
+    """
+    __tablename__ = "location_pings"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    expense_id = Column(Integer, ForeignKey("expenses.id", ondelete="CASCADE"), nullable=False)
+    employee_id = Column(String(50), ForeignKey("users.username"), nullable=False, index=True)
+    lat = Column(Float, nullable=False)
+    lng = Column(Float, nullable=False)
+    accuracy = Column(Float, nullable=True)     # metres
+    speed = Column(Float, nullable=True)        # metres per second
+    recorded_at = Column(DateTime, nullable=False, index=True)
+    received_at = Column(DateTime, nullable=False, default=utcnow)
+
+    __table_args__ = (
+        Index("ix_location_pings_expense_time", "expense_id", "recorded_at"),
+    )
+
+
 EXTRA_INDEXES = [
     Index("ix_expenses_created_date", Expense.created_date),
     Index("ix_expenses_employee_created", Expense.employee_id, Expense.created_date),
