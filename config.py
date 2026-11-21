@@ -46,6 +46,9 @@ class Settings:
     #   CORS_ORIGIN_REGEX=https://expense-tracker-frontend[a-z0-9-]*\.vercel\.app
     cors_origin_regex = os.getenv("CORS_ORIGIN_REGEX", "").strip() or None
 
+    # Live trip tracking: GPS points older than this many days are deleted at start-up.
+    tracking_retention_days: int = int(os.getenv("TRACKING_RETENTION_DAYS", "60"))
+
 
 settings = Settings()
 

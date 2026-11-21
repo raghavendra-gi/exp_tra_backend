@@ -8,7 +8,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from database import SessionLocal
 from deps import clear_user_cache
 from migrate import run_migrations
-from routers import auth, users, expenses, files
+from routers import auth, users, expenses, files, tracking
 from config import settings
 from seed import seed_users
 
@@ -25,6 +25,7 @@ async def lifespan(app: FastAPI):
     db = SessionLocal()
     try:
         seed_users(db)                      # creates head/hr/emp1-3 once
+        tracking.purge_old_pings(db)        # drop GPS points past the retention period
     finally:
         db.close()
     yield
@@ -79,6 +80,7 @@ app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(users.router, prefix="/api/users", tags=["users"])
 app.include_router(expenses.router, prefix="/api/expenses", tags=["expenses"])
 app.include_router(files.router, prefix="/api/files", tags=["files"])
+app.include_router(tracking.router, prefix="/api/tracking", tags=["tracking"])
 
 
 @app.get("/")
