@@ -35,6 +35,12 @@ def strip_file_payloads(data):
             out[k] = v
     return out
 
+def strip_geo(data):
+    """Copy of `data` without saved GPS points (keys ending in 'Geo')."""
+    if not isinstance(data, dict):
+        return data
+    return {k: v for k, v in data.items() if not (isinstance(k, str) and k.endswith("Geo"))}
+
 
 def history_dict(h) -> dict:
     return {"id": h.id, "at": h.at, "by": h.by, "action": h.action, "note": h.note}
