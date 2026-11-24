@@ -122,7 +122,12 @@ def list_expenses(
     stmt = select(*_BASE_COLUMNS, payload_col.label("payload"), E.data_lite.is_(None).label("lite_missing"))
     stmt = _visible(stmt, current_user)
     if status_filter:
-        stmt = stmt.where(E.status == status_filter)
+        # If the user clicks the "Pending" tab, show both "Pending" and "In Progress" trips
+         if status_filter == "Pending":
+            stmt = stmt.where(E.status.in_(["Pending", "In Progress"]))
+         else:
+            stmt = stmt.where(E.status == status_filter)
+            
     if type_filter:
         stmt = stmt.where(E.type == type_filter)
     if employee and current_user.role in APPROVER_ROLES:
