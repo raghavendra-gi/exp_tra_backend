@@ -5,10 +5,15 @@ While a Regional Trip is "In Progress" the employee's phone sends GPS points her
 Accounts and the Operation Head can see where each active trip is right now and the
 route travelled so far. The Chairman never gets location data (same rule as expenses.py).
 
-  POST /api/tracking/pings                 employee/clerk   - upload a batch of points
-  GET  /api/tracking/active                employee/clerk   - which of MY trips should be tracked now
-  GET  /api/tracking/live                  accounts/op_head - every active trip + its latest point
+  POST /api/tracking/consent               employee/clerk   - "yes, track this trip" / "no" (asked right after submitting)
+  POST /api/tracking/pings                 employee/clerk   - upload a batch of points (only if the trip is allowed)
+  GET  /api/tracking/active                employee/clerk   - my In Progress trips and my choice for each
+  GET  /api/tracking/live                  accounts/op_head - the active trips whose employee agreed + latest point
   GET  /api/tracking/trips/{id}/path       accounts/op_head - the whole route of one trip
+
+Consent
+  Nothing is tracked until the employee agrees FOR THAT TRIP. The choice is stored on the server (trip_tracking),
+  so Accounts only ever see trips that were allowed, and points for any other trip are refused.
 
 Design notes
   * Points are batched by the phone, so one request carries many points (max 200).
@@ -24,7 +29,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, func, insert
+from sqlalchemy import and_, func, insert, inspect
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -35,16 +40,40 @@ from roles import ACCOUNTS, FILER_ROLES, OP_HEAD
 from routers.expenses import TWO_STAGE_TYPES
 from timeutil import as_utc, utcnow
 
-router = APIRouter()
+SETUP_MISSING_DETAIL = (
+    "Live tracking is not set up on the server yet: the database update for it (migrations 0007 and 0008) has not been applied."
+)
+_tables_ok = False
+
+
+def _tables_ready(db: Session = Depends(get_db)) -> None:
+    """
+    Answer with a clear 503 (instead of a confusing 500) when the database update for live tracking is missing,
+    e.g. a migration file was not copied into app/migrations/versions/. Checked until it succeeds once.
+    """
+    global _tables_ok
+    if _tables_ok:
+        return
+    if {"location_pings", "trip_tracking"} <= set(inspect(db.get_bind()).get_table_names()):
+        _tables_ok = True
+        return
+    raise HTTPException(status_code=503, detail=SETUP_MISSING_DETAIL)
+
+
+router = APIRouter(dependencies=[Depends(_tables_ready)])
 log = logging.getLogger("uvicorn.error")
 
 E = models.Expense
 H = models.ExpenseHistory
 P = models.LocationPing
+T = models.TripTracking
 
 TRACKED_TYPES = set(TWO_STAGE_TYPES)               # trips that go In Progress -> Pending
 TRIP_ENDED_ACTION = "Trip ended and submitted for approval"
 TRACKING_STARTED_ACTION = "Live location tracking started"
+TRACKING_ALLOWED_ACTION = "Live location tracking allowed by the employee"
+TRACKING_DECLINED_ACTION = "Live location tracking declined by the employee"
+NOT_ALLOWED_DETAIL = "Live tracking is not allowed for this trip"
 
 MAX_BATCH = 200                                    # points per request
 MAX_ACCURACY_M = 1000                              # worse fixes are cell-tower guesses: ignore
@@ -103,12 +132,49 @@ class PingIn(BaseModel):
     at: datetime                                   # when the phone measured it
 
 
+class ConsentIn(BaseModel):
+    expense_id: int
+    allowed: bool
+
+
 class PingBatch(BaseModel):
     expense_id: int
     points: list[PingIn] = Field(min_length=1, max_length=MAX_BATCH)
 
 
 # ───────────────────────── employee side ─────────────────────────
+
+def _is_allowed(db: Session, expense_id: int) -> bool:
+    row = db.query(T.allowed).filter(T.expense_id == expense_id).first()
+    return bool(row and row[0])
+
+
+@router.post("/consent")
+def set_consent(
+    payload: ConsentIn,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_filer),
+):
+    """The employee's answer to "share your live location for this trip?" (asked right after the trip is submitted)."""
+    e = db.get(E, payload.expense_id)
+    if e is None or e.employee_id != user.username or e.type not in TRACKED_TYPES:
+        raise HTTPException(status_code=404, detail="Trip not found")
+    if e.status != "In Progress":
+        raise HTTPException(status_code=409, detail="This trip is no longer in progress")
+
+    now = utcnow()
+    row = db.get(T, e.id)
+    changed = row is None or row.allowed != payload.allowed
+    if row is None:
+        db.add(T(expense_id=e.id, allowed=payload.allowed, decided_at=now))
+    else:
+        row.allowed, row.decided_at = payload.allowed, now
+    if changed:                      # an audit line in the trip's history, visible to Accounts
+        db.add(H(expense_id=e.id, by=user.display_name, at=now,
+                 action=TRACKING_ALLOWED_ACTION if payload.allowed else TRACKING_DECLINED_ACTION))
+    db.commit()
+    return {"expense_id": e.id, "allowed": payload.allowed}
+
 
 @router.post("/pings")
 def upload_pings(
@@ -119,6 +185,9 @@ def upload_pings(
     e = db.get(E, payload.expense_id)
     if e is None or e.employee_id != user.username or e.type not in TRACKED_TYPES:
         raise HTTPException(status_code=404, detail="Trip not found")
+
+    if not _is_allowed(db, e.id):
+        raise HTTPException(status_code=403, detail=NOT_ALLOWED_DETAIL)
 
     now = utcnow()
     in_progress = e.status == "In Progress"
@@ -171,11 +240,14 @@ def my_active_trips(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(require_filer),
 ):
-    """The trips of the signed-in person that are In Progress, i.e. the ones to track right now."""
-    rows = (db.query(E.id, E.type, E.created_date)
+    """The signed-in person's trips that are In Progress, with their answer about live tracking for each."""
+    rows = (db.query(E.id, E.type, E.created_date, T.allowed)
+            .outerjoin(T, T.expense_id == E.id)
             .filter(E.employee_id == user.username, E.status == "In Progress", E.type.in_(TRACKED_TYPES))
             .order_by(E.created_date.desc()).all())
-    return {"trips": [{"id": r.id, "type": r.type, "started_at": _iso(r.created_date)} for r in rows]}
+    # tracking: true = allowed, false = declined, null = not answered yet
+    return {"trips": [{"id": r.id, "type": r.type, "started_at": _iso(r.created_date), "tracking": r.allowed}
+                      for r in rows]}
 
 
 # ───────────────────────── approver side ─────────────────────────
@@ -185,12 +257,18 @@ def live(
     db: Session = Depends(get_db),
     user: CurrentUser = Depends(require_viewer),
 ):
-    """Every active trip with its most recent point (null until the phone sends the first one)."""
+    """
+    The active trips whose employee agreed to live tracking, each with its most recent point (null until the
+    phone sends the first one). `not_sharing` counts the other In Progress trips (not shown).
+    """
     now = utcnow()
+    in_progress = db.query(E.id).filter(E.status == "In Progress", E.type.in_(TRACKED_TYPES))
     trips = (db.query(E.id, E.employee_id, E.employee_name, E.type, E.created_date, E.data_lite)
-             .filter(E.status == "In Progress", E.type.in_(TRACKED_TYPES))
+             .join(T, T.expense_id == E.id)
+             .filter(E.status == "In Progress", E.type.in_(TRACKED_TYPES), T.allowed.is_(True))
              .order_by(E.created_date.desc()).all())
     ids = [t.id for t in trips]
+    not_sharing = in_progress.count() - len(ids)
 
     last: dict[int, models.LocationPing] = {}
     count: dict[int, int] = {}
@@ -220,7 +298,7 @@ def live(
                 "age_seconds": max(0, int((now - p.recorded_at).total_seconds())),
             },
         })
-    return {"server_time": _iso(now), "trips": out}
+    return {"server_time": _iso(now), "not_sharing": not_sharing, "trips": out}
 
 
 @router.get("/trips/{expense_id}/path")

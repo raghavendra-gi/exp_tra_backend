@@ -1,5 +1,5 @@
 from sqlalchemy import (
-    Column, Integer, String, Text, DateTime, ForeignKey, JSON, Index, event, inspect, Float, UniqueConstraint
+    Column, Integer, String, Text, DateTime, ForeignKey, JSON, Index, event, inspect, Float, UniqueConstraint, Boolean
 )
 from sqlalchemy.orm import relationship
 
@@ -137,6 +137,18 @@ class LocationPing(Base):
     __table_args__ = (
         Index("ix_location_pings_expense_time", "expense_id", "recorded_at"),
     )
+
+
+class TripTracking(Base):
+    """
+    The employee's choice about live tracking for ONE trip. No row = never asked.
+    Only trips with allowed = True are tracked, shown on the Live tracking page and accept GPS points.
+    """
+    __tablename__ = "trip_tracking"
+
+    expense_id = Column(Integer, ForeignKey("expenses.id", ondelete="CASCADE"), primary_key=True)
+    allowed = Column(Boolean, nullable=False)
+    decided_at = Column(DateTime, nullable=False, default=utcnow)
 
 
 EXTRA_INDEXES = [
