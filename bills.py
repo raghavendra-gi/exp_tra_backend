@@ -1,5 +1,5 @@
 """
-Duplicate-bill detection - inside ONE expense only.
+Duplicate-bill detection - inside ONE expense only (bills, and start vs end meter photos).
 
 The files attached to a bill field (`receipt`, `ticketBill`) are fingerprinted with SHA-256
 over their bytes. If the same file is attached twice to the same expense (for example one
@@ -27,8 +27,18 @@ from fastapi import HTTPException
 
 logging.getLogger("uvicorn.error").info("[bills] duplicate bills are checked inside one expense only")
 
-# Fields of an expense that hold bills. Meter photos are deliberately not listed.
+# Fields of an expense that hold bills.
 BILL_FIELDS = ("receipt", "ticketBill")
+
+# Meter photos. Start and end meter of ONE expense must not be the same picture, so these are
+# fingerprinted too and compared with each other (never with the bill fields above).
+# Car/Bike trip: startMeter / endMeter.  Regional Trip: startMeterImage / endMeterImage.
+METER_FIELDS = {
+    "startMeter": "Start meter",
+    "endMeter": "End meter",
+    "startMeterImage": "Start meter image",
+    "endMeterImage": "End meter image",
+}
 
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -70,12 +80,48 @@ def collect(data) -> list[Bill]:
     return bills
 
 
+def collect_meters(data) -> list[Bill]:
+    """Fingerprint of every meter photo in an expense's `data`."""
+    out: list[Bill] = []
+    if not isinstance(data, dict):
+        return out
+    for field in METER_FIELDS:
+        items = data.get(field)
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            raw = _decode_data_url(item.get("dataUrl")) if isinstance(item, dict) else None
+            if raw:
+                out.append(Bill(field, str(item.get("name") or "meter")[:255], hashlib.sha256(raw).hexdigest()))
+    return out
+
+
+def _reject_duplicate_meters(data) -> None:
+    first_seen: dict = {}      # sha256 -> field where it was first used
+    clashes: list = []         # (file name, first field, second field)
+    for m in collect_meters(data):
+        if m.sha256 in first_seen:
+            clashes.append((m.name, first_seen[m.sha256], m.field))
+        else:
+            first_seen[m.sha256] = m.field
+    if clashes:
+        parts = []
+        for name, a, b in dict.fromkeys(clashes):
+            parts.append(
+                f'"{name}" is attached twice in {METER_FIELDS[a]}' if a == b
+                else f'"{name}" is used for both {METER_FIELDS[a]} and {METER_FIELDS[b]}'
+            )
+        # starts with "Duplicate bill" so the frontend shows it on the field (see ExpenseFormPage)
+        raise HTTPException(status_code=409, detail="Duplicate bill: " + "; ".join(parts) + ". Upload a different photo.")
+
+
 def reject_duplicates(*args, **_ignored) -> list[Bill]:
     """
     Raise 409 when the same file is attached more than once to this expense.
     Call it as reject_duplicates(data); the older reject_duplicates(db, data, username, ...) also works.
     """
     data = next((a for a in args if isinstance(a, dict)), None)
+    _reject_duplicate_meters(data)
     bills = collect(data)
     seen: set = set()
     repeated: list = []
