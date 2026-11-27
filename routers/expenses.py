@@ -460,7 +460,9 @@ def update_expense(
         raise HTTPException(status_code=403, detail="You can only edit your own expenses")
 
     payload.data = _clean_geo(payload.data)
-    bills.reject_duplicates(payload.data)          # 409 if the same bill is attached twice
+    # Ending a Regional Trip sends only the end-stage fields; the start meter photo is already saved,
+    # so check the merged data - otherwise the end meter could never be compared with it.
+    bills.reject_duplicates({**(e.data or {}), **payload.data} if e.status == "In Progress" else payload.data)  # 409 on duplicates
     now = utcnow()
     if e.status == "In Progress":
         e.data = {**(e.data or {}), **payload.data}
